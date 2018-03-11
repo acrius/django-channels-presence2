@@ -35,22 +35,24 @@ class ChannelPresence:
 		else:
 			raise PresenceError('Groups should be iterable of groups names.')
 
-		self.expired_activity = settings.get('EXPIRED_USER_ACTIVITY', 60 * 5)
-		self.rooms = []
+		self.expired_activity = getattr(settings, 'EXPIRED_USER_ACTIVITY', 60 * 5)
+		self.rooms = set()
 
 		return self
 
 	async def join(self, rooms=None):
 		await self.update_presence(rooms=rooms)
-		await self.send(type=PresenceEvents.JOIN_USER, user=self.user, groups=self.groups, rooms=rooms or self.rooms)
+		await self.send(type=PresenceEvents.JOIN_USER, user_pk=self.user.pk, groups=list(self.groups),
+						rooms=list(rooms or self.rooms))
 
 	async def leave(self, rooms=None):
 		await self.update_presence(leave=True, rooms=rooms)
-		await self.send(type=PresenceEvents.LEAVE_USER, user=self.user, groups=self.groups, rooms=rooms or self.rooms)
+		await self.send(type=PresenceEvents.LEAVE_USER, user_pk=self.user.pk, groups=list(self.groups),
+						rooms=list(rooms or self.rooms))
 
 	async def send(self, **event):
 		for group in self.groups:
-			self.channel_layer.send(group, event)
+			await self.channel_layer.group_send(group, event)
 
 	async def update_presence(self, leave=False, rooms=None):
 		rooms = rooms or self.rooms
@@ -70,7 +72,7 @@ class ChannelPresence:
 		if rooms:
 			self.rooms = set(*self.rooms, *rooms)
 
-	async def get_users(self, group, room=None, only_active=True):
+	async def get_users(self, group, room=None):
 		pool = await self.channel_layer.connection(self.channel_layer.consistent_hash(group))
 		presence_key = self._presence_key(group, room=room)
 		now_timestamp = self._from_date_to_int(datetime.now())
@@ -78,8 +80,8 @@ class ChannelPresence:
 			return [{
 				'user': await sync_to_async(self.get_lazy_user)(user_pk),
 				'present_at': self._from_int_to_date(timestamp),
-				'active': True if now_timestamp - timestamp < self.expired_activity else False
-			} for user_pk, timestamp in await connection.zrange(presence_key, start=0, end=-1, withscores=True)]
+				'is_active': True if now_timestamp - timestamp < self.expired_activity else False
+			} for user_pk, timestamp in await connection.zrange(presence_key, start=0, stop=-1, withscores=True)]
 
 	@staticmethod
 	def get_lazy_user(user_pk):
@@ -87,9 +89,12 @@ class ChannelPresence:
 
 	def _presence_key(self, group, room=None):
 		assert self.channel_layer.valid_group_name(group), "Group name not valid"
-		group_key = self.channel_layer._group_key(group)
+		group_key = self._group_key(group)
 
 		return '{}:{}:presence'.format(group_key, room) if room else '{}:presence'.format(group_key)
+
+	def _group_key(self, group):
+		return "{}:group:{}".format(self.channel_layer.prefix, group)
 
 	@staticmethod
 	def _from_int_to_date(date):
