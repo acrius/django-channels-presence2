@@ -1,5 +1,6 @@
 from time import mktime
 from datetime import datetime
+from collections import Iterable
 from asgiref.sync import sync_to_async
 from django.contrib.auth import get_user_model
 from django.conf import settings
@@ -8,41 +9,66 @@ from django.utils.functional import SimpleLazyObject
 from .exceptions import PresenceError
 
 
+class PresenceEvents:
+	JOIN_USER = 'join.user'
+	LEAVE_USER = 'leave.user'
+
+
 class ChannelPresence:
 	@classmethod
-	async def create_from_consumer(cls, consumer):
-		return await cls.create(consumer.channel_layer, consumer.scope['user'])
+	async def create_from_consumer(cls, consumer, groups):
+		return await cls.create(consumer.channel_layer, consumer.scope['user'], groups)
 
 	@classmethod
-	async def create(cls, channel_layer, user):
+	async def create(cls, channel_layer, user, groups):
 		self = cls()
+
 		if not user.is_anonymous:
 			self.user = user
 		else:
 			raise PresenceError('To use presence, the user should not be anonymous.')
+
 		self.channel_layer = channel_layer
+
+		if isinstance(groups, Iterable):
+			self.groups = groups
+		else:
+			raise PresenceError('Groups should be iterable of groups names.')
+
 		self.expired_activity = settings.get('EXPIRED_USER_ACTIVITY', 60 * 5)
+		self.rooms = []
 
 		return self
 
-	async def join(self, group, room=None):
-		self.update_presence(group, room=room)
+	async def join(self, rooms=None):
+		await self.update_presence(rooms=rooms)
+		await self.send(type=PresenceEvents.JOIN_USER, user=self.user, groups=self.groups, rooms=rooms or self.rooms)
 
-	async def leave(self, group, room=None):
-		self.update_presence(group, leave=True, room=room)
+	async def leave(self, rooms=None):
+		await self.update_presence(leave=True, rooms=rooms)
+		await self.send(type=PresenceEvents.LEAVE_USER, user=self.user, groups=self.groups, rooms=rooms or self.rooms)
 
-	async def update_presence(self, group, leave=False, room=None):
+	async def send(self, **event):
+		for group in self.groups:
+			self.channel_layer.send(group, event)
+
+	async def update_presence(self, leave=False, rooms=None):
+		rooms = rooms or self.rooms
+
 		locations = (
-			self._presence_key(group),
-			*((self._presence_key(group, room=room),) if room else ())
+			*(self._presence_key(group) for group in self.groups),
+			*(self._presence_key(group, room=room) for group in self.groups for room in rooms)
 		)
 
 		timestamp = self._from_date_to_int(datetime.now())
 
-		pool = await self.channel_layer.connection(self.channel_layer.consistent_hash(group))
+		pool = await self.channel_layer.connection(self.channel_layer.consistent_hash(self.groups[0]))
 		with (await pool) as connection:
 			for location in locations:
 				await connection.zadd(location, (-1 if leave else 1) * timestamp, self.user.pk)
+
+		if rooms:
+			self.rooms = set(*self.rooms, *rooms)
 
 	async def get_users(self, group, room=None, only_active=True):
 		pool = await self.channel_layer.connection(self.channel_layer.consistent_hash(group))
