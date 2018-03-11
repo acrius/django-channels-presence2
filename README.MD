@@ -10,13 +10,13 @@ Simple presence boilerplate for django-channels 2 and channel redis backend.
 
 Create presence for consumer:
 
-```
+```python
 self.presence = await ChannelPresence.create_from_consumer(self, groups=(PUBLICATIONS_SCHEDULE_GROUP,))
 ```
 
 Example of create:
 
-```
+```python
 class Consumer(AsyncJsonWebsocketConsumer):
    async def connect(self):
        self.presence = await ChannelPresence.create_from_consumer(self, groups=(CONSUMER_GROUP,))
@@ -27,19 +27,19 @@ Learn more about groups: http://channels.readthedocs.io/en/latest/topics/channel
         
 Join user:
 
-```
+```python
 await self.presence.join()
 ```
 
 Leave user:
 
-```
+```python
 await self.presence.leave()
 ```
 
 Get users:
 
-```
+```python
 await self.presence.get_users(GROUP)
 ```
 
