@@ -80,7 +80,7 @@ class ChannelPresence:
 			return [{
 				'user': await sync_to_async(self.get_lazy_user)(user_pk),
 				'present_at': self._from_int_to_date(timestamp),
-				'is_active': True if now_timestamp - timestamp < self.expired_activity else False
+				'is_active': True if timestamp > 0 and now_timestamp - timestamp < self.expired_activity else False
 			} for user_pk, timestamp in await connection.zrange(presence_key, start=0, stop=-1, withscores=True)]
 
 	@staticmethod
